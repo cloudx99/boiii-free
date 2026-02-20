@@ -10,6 +10,12 @@ namespace updater
 {
 	void update()
 	{
+		// DISABLED: Client updater service is disabled to preserve custom modifications
+		// to party.cpp, getinfo.cpp, and matchmaking_servers.cpp for offline LAN lobbies.
+		// If you want to re-enable updates, remove the early return below.
+		return;
+
+		/*
 		if (utils::flags::has_flag("noupdate"))
 		{
 			return;
@@ -31,6 +37,7 @@ namespace updater
 		{
 			MessageBoxA(nullptr, "Unknown error occurred during update.", "Updater Error", MB_OK | MB_ICONERROR);
 		}
+		*/
 	}
 
 	class component final : public generic_component
