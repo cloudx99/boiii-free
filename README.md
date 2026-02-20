@@ -7,7 +7,7 @@
 > [!NOTE]
 > Feel free to open up Pull requests 😑
 
----
+----
 
 ## Table of Contents
 
