@@ -85,6 +85,130 @@ namespace steam
 			return out;
 		}
 
+		// Get all /24 subnets from local adapters for dynamic LAN discovery
+		std::unordered_set<uint32_t> get_lan_subnets_from_adapters()
+		{
+			std::unordered_set<uint32_t> subnets{};
+
+			ULONG size = 0;
+			if (GetAdaptersAddresses(AF_INET, 0, nullptr, nullptr, &size) != ERROR_BUFFER_OVERFLOW || size == 0)
+			{
+				return subnets;
+			}
+
+			std::string buffer;
+			buffer.resize(size);
+			auto* addrs = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+			if (GetAdaptersAddresses(AF_INET, 0, nullptr, addrs, &size) != NO_ERROR)
+			{
+				return subnets;
+			}
+
+			for (auto* a = addrs; a; a = a->Next)
+			{
+				for (auto* u = a->FirstUnicastAddress; u; u = u->Next)
+				{
+					if (!u->Address.lpSockaddr || u->Address.lpSockaddr->sa_family != AF_INET)
+					{
+						continue;
+					}
+
+					const auto* in = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
+					uint32_t ip = ntohl(in->sin_addr.s_addr);
+					// Extract /24 subnet (mask last octet)
+					uint32_t subnet = (ip >> 8) << 8;
+					subnets.emplace(subnet);
+				}
+			}
+
+			return subnets;
+		}
+
+		// UDP broadcast listener for offline host discovery on port 27017
+		std::vector<game::netadr_t> discover_lan_hosts_via_broadcast()
+		{
+			std::vector<game::netadr_t> hosts{};
+
+			try
+			{
+				// Create UDP socket for broadcast reception
+				WSADATA wsa_data{};
+				if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0)
+				{
+					return hosts;
+				}
+
+				SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+				if (sock == INVALID_SOCKET)
+				{
+					WSACleanup();
+					return hosts;
+				}
+
+				// Allow reuse of socket
+				int reuse = 1;
+				setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+				// Bind to broadcast port
+				sockaddr_in addr{};
+				addr.sin_family = AF_INET;
+				addr.sin_addr.s_addr = htonl(INADDR_ANY);
+				addr.sin_port = htons(27017);
+
+				if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR)
+				{
+					closesocket(sock);
+					WSACleanup();
+					return hosts;
+				}
+
+				// Set socket to non-blocking and short timeout
+				u_long mode = 1;
+				ioctlsocket(sock, FIONBIO, &mode);
+
+				// Allow multicast reception
+				int broadcast = 1;
+				setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&broadcast), sizeof(broadcast));
+
+				// Receive broadcast packets with timeout
+				char buffer[512]{};
+				sockaddr_in src_addr{};
+				int src_len = sizeof(src_addr);
+				std::unordered_set<uint32_t> discovered_ips{};
+
+				uint64_t start_time = GetTickCount64();
+				while (GetTickCount64() - start_time < 100) // 100ms timeout
+				{
+					int recv_len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, reinterpret_cast<sockaddr*>(&src_addr), &src_len);
+					if (recv_len > 0)
+					{
+						discovered_ips.emplace(src_addr.sin_addr.s_addr);
+					}
+					Sleep(10);
+				}
+
+				// Convert discovered IPs to netadr_t
+				for (const auto& ip : discovered_ips)
+				{
+					game::netadr_t host{};
+					host.localNetID = game::NS_SERVER;
+					host.type = game::NA_RAWIP;
+					host.port = 27017;
+					host.addr = ip;
+					hosts.emplace_back(host);
+				}
+
+				closesocket(sock);
+				WSACleanup();
+			}
+			catch (...)
+			{
+				// Silent fail for broadcast discovery
+			}
+
+			return hosts;
+		}
+
 		std::vector<game::netadr_t> get_lan_targets()
 		{
 			std::vector<game::netadr_t> out{};
@@ -162,10 +286,43 @@ namespace steam
 				}
 			};
 
-			add_range_24(192, 168, 0);
-			add_range_24(192, 168, 1);
-			add_range_24(10, 0, 0);
-			add_range_24(26, 0, 0);
+			// Scan dynamically detected subnets from local adapters
+			const auto adapter_subnets = get_lan_subnets_from_adapters();
+			for (const auto& subnet : adapter_subnets)
+			{
+				uint8_t a = (subnet >> 24) & 0xFF;
+				uint8_t b = (subnet >> 16) & 0xFF;
+				uint8_t c = (subnet >> 8) & 0xFF;
+				add_range_24(a, b, c);
+			}
+
+			// Fallback: Scan common private IP ranges if no adapters detected
+			if (adapter_subnets.empty())
+			{
+				add_range_24(192, 168, 0);
+				add_range_24(192, 168, 1);
+				add_range_24(10, 0, 0);
+				add_range_24(26, 0, 0);
+			}
+
+			// Add hosts discovered via UDP broadcast on port 27017
+			const auto broadcast_hosts = discover_lan_hosts_via_broadcast();
+			for (const auto& host : broadcast_hosts)
+			{
+				bool already_added = false;
+				for (const auto& existing : out)
+				{
+					if (existing == host)
+					{
+						already_added = true;
+						break;
+					}
+				}
+				if (!already_added)
+				{
+					out.emplace_back(host);
+				}
+			}
 
 			return out;
 		}

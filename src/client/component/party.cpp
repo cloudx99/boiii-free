@@ -22,6 +22,27 @@ namespace party
 		std::atomic_bool is_connecting_to_dedi{false};
 		game::netadr_t connect_host{{}, {}, game::NA_BAD, {}};
 
+		// Detect if an address is local (private) for LAN mode classification
+		bool is_local_address(const game::netadr_t& addr)
+		{
+			if (addr.type != game::NA_RAWIP)
+			{
+				return false;
+			}
+
+			uint8_t a = (addr.addr >> 24) & 0xFF;
+			uint8_t b = (addr.addr >> 16) & 0xFF;
+
+			// Check private IP ranges: 127.x.x.x, 192.168.x.x, 10.x.x.x, 172.16-31.x.x
+			if (a == 127) return true; // loopback
+			if (a == 192 && b == 168) return true; // 192.168.x.x
+			if (a == 10) return true; // 10.x.x.x
+			if (a == 172 && (b >= 16 && b <= 31)) return true; // 172.16-31.x.x
+			if (a == 169 && b == 254) return true; // 169.254.x.x (link-local)
+
+			return false;
+		}
+
 		struct server_query
 		{
 			bool sent{false};
@@ -117,9 +138,8 @@ namespace party
 			utils::string::copy(host.info.name, hostname.data());
 
 			host.lobbyType = game::LOBBY_TYPE_PRIVATE;
-			host.lobbyParams.networkMode = game::LOBBY_NETWORKMODE_LIVE;
-			host.lobbyParams.mainMode = convert_mode(mode);
-
+		// Use LAN mode for local addresses (offline hosted games), LIVE mode for remote
+		host.lobbyParams.networkMode = is_local_address(addr) ? game::LOBBY_NETWORKMODE_LAN : game::LOBBY_NETWORKMODE_LIVE;		host.lobbyParams.mainMode = convert_mode(mode);
 			host.retryCount = 0;
 			host.retryTime = game::Sys_Milliseconds();
 

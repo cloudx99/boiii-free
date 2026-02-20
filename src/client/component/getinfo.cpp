@@ -84,13 +84,15 @@ namespace getinfo
 		{
 			//utils::hook::jump(game::select(0x142254EF0, 0x140537730), get_assigned_team);
 
+			// Respond to getInfo queries for offline hosts (even if not in dedicated server mode)
+			// This enables offline hosted games to appear in LAN server browser
 			network::on("getInfo", [](const game::netadr_t& target, const network::data_view& data)
 			{
 				utils::info_string info{};
 				info.set("challenge", std::string{data.begin(), data.end()});
 				info.set("gamename", "T7");
 				info.set("hostname",
-				         game::get_dvar_string(game::is_server() ? "live_steam_server_name" : "sv_hostname"));
+				         game::is_server_running() ? game::get_dvar_string("live_steam_server_name") : game::get_dvar_string("sv_hostname"));
 				info.set("gametype", game::get_dvar_string("g_gametype"));
 				//info.set("sv_motd", get_dvar_string("sv_motd"));
 				info.set("description",
